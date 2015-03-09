@@ -73,7 +73,7 @@ options:
 requirements: [ "boto" ]
 notes:
   - 'Currently boto does not support the removal of Managed Policies, the module will not work removing/adding managed policies.'
-author: Jonathan I. Davila and Paul Seiffert
+author: Jonathan I. Davila 
 '''
 
 EXAMPLES = '''
