@@ -74,12 +74,13 @@ EXAMPLES = '''
 '''
 
 try:
+    import boto
     from boto.elasticache.layer1 import ElastiCacheConnection
     from boto.regioninfo import RegionInfo
+    from boto.exception import BotoServerError
     HAS_BOTO = True
 except ImportError:
     HAS_BOTO = False
-
 
 def main():
     argument_spec = ec2_argument_spec()
@@ -115,10 +116,14 @@ def main():
     if not region:
         module.fail_json(msg = str("Either region or AWS_REGION or EC2_REGION environment variable or boto config aws_region or ec2_region must be set."))
 
+
+    """Get an elasticache connection"""
     try:
-        conn = boto.elasticache.connect_to_region(region, **aws_connect_kwargs)
-    except boto.exception.BotoServerError, e:
-        module.fail_json(msg = e.error_message)
+        endpoint = "elasticache.%s.amazonaws.com" % region
+        connect_region = RegionInfo(name=region, endpoint=endpoint)
+        conn = ElastiCacheConnection(region=connect_region, **aws_connect_kwargs)
+    except boto.exception.NoAuthHandlerFound, e:
+        module.fail_json(msg=e.message)
 
     try:
         changed = False
@@ -128,22 +133,26 @@ def main():
             matching_groups = conn.describe_cache_subnet_groups(group_name, max_records=100)
             exists = len(matching_groups) > 0
         except BotoServerError, e:
-            if e.error_code != 'ElasticacheSubnetGroupNotFoundFault':
+            if e.error_code != 'CacheSubnetGroupNotFoundFault':
                 module.fail_json(msg = e.error_message)
-        
+
         if state == 'absent':
             if exists:
                 conn.delete_cache_subnet_group(group_name)
                 changed = True
         else:
             if not exists:
-                new_group = conn.create_cache_subnet_group(group_name, desc=group_description, subnet_ids=group_subnets)
-
+                new_group = conn.create_cache_subnet_group(group_name, cache_subnet_group_description=group_description, subnet_ids=group_subnets)
+                changed = True
             else:
-                changed_group = conn.modify_cache_subnet_group(group_name, description=group_description, subnet_ids=group_subnets)
+                changed_group = conn.modify_cache_subnet_group(group_name, cache_subnet_group_description=group_description, subnet_ids=group_subnets)
+                changed = True
 
     except BotoServerError, e:
-        module.fail_json(msg = e.error_message)
+        if e.error_message != 'No modifications were requested.':
+            module.fail_json(msg = e.error_message)
+        else:
+            changed = False
 
     module.exit_json(changed=changed)
 
