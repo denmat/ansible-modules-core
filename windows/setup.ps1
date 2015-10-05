@@ -25,6 +25,7 @@ $result = New-Object psobject @{
     changed = $false
 };
 
+$win32_os = Get-CimInstance Win32_OperatingSystem
 $osversion = [Environment]::OSVersion
 $memory = @()
 $memory += Get-WmiObject win32_Physicalmemory
@@ -53,14 +54,20 @@ foreach ($adapter in $ActiveNetcfg)
 
 Set-Attr $result.ansible_facts "ansible_interfaces" $formattednetcfg
 
+Set-Attr $result.ansible_facts "ansible_architecture" $win32_os.OSArchitecture 
+
 Set-Attr $result.ansible_facts "ansible_hostname" $env:COMPUTERNAME;
 Set-Attr $result.ansible_facts "ansible_fqdn" "$([System.Net.Dns]::GetHostByName((hostname)).HostName)"
 Set-Attr $result.ansible_facts "ansible_system" $osversion.Platform.ToString()
 Set-Attr $result.ansible_facts "ansible_os_family" "Windows"
+Set-Attr $result.ansible_facts "ansible_os_name" ($win32_os.Name.Split('|')[0]).Trim()
 Set-Attr $result.ansible_facts "ansible_distribution" $osversion.VersionString
 Set-Attr $result.ansible_facts "ansible_distribution_version" $osversion.Version.ToString()
 
 Set-Attr $result.ansible_facts "ansible_totalmem" $capacity
+
+Set-Attr $result.ansible_facts "ansible_lastboot" $win32_os.lastbootuptime.ToString("u")
+Set-Attr $result.ansible_facts "ansible_uptime_seconds" $([System.Convert]::ToInt64($(Get-Date).Subtract($win32_os.lastbootuptime).TotalSeconds))
 
 $ips = @()
 Foreach ($ip in $netcfg.IPAddress) { If ($ip) { $ips += $ip } }
@@ -70,6 +77,10 @@ $psversion = $PSVersionTable.PSVersion.Major
 Set-Attr $result.ansible_facts "ansible_powershell_version" $psversion
 
 $winrm_https_listener_parent_path = Get-ChildItem -Path WSMan:\localhost\Listener -Recurse | Where-Object {$_.PSChildName -eq "Transport" -and $_.Value -eq "HTTPS"} | select PSParentPath
+$winrm_https_listener_path = $null
+$https_listener = $null
+$winrm_cert_thumbprint = $null
+$uppercase_cert_thumbprint = $null
 
 if ($winrm_https_listener_parent_path ) {
     $winrm_https_listener_path = $winrm_https_listener_parent_path.PSParentPath.Substring($winrm_https_listener_parent_path.PSParentPath.LastIndexOf("\"))

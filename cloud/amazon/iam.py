@@ -20,7 +20,7 @@ module: iam
 short_description: Manage IAM users, groups, roles and keys
 description:
      - Allows for the management of IAM users, groups, roles and access keys.
-version_added: "1.9"
+version_added: "2.0"
 options:
   iam_type:
     description:
@@ -28,48 +28,42 @@ options:
     required: true
     default: null
     choices: [ "user", "group", "role"]
-    aliases: []
   name:
     description:
       - Name of IAM resource to create or identify
     required: true
-    aliases: []
   new_name:
     description:
       - When state is update, will replace name with new_name on IAM resource
     required: false
-    aliases: []
+    default: null
   new_path:
     description:
       - When state is update, will replace the path with new_path on the IAM resource
     required: false
-    aliases: []
+    default: null
   state:
     description:
       - Whether to create, delete or update the IAM resource. Note, roles cannot be updated.
     required: true
     default: null
     choices: [ "present", "absent", "update" ]
-    aliases: []
   path:
     description:
       - When creating or updating, specify the desired path of the resource. If state is present, it will replace the current path to match what is passed in when they do not match.
     required: false
     default: "/"
-    aliases: []
   access_key_state:
     description:
       - When type is user, it creates, removes, deactivates or activates a user's access key(s). Note that actions apply only to keys specified.
     required: false
     default: null
     choices: [ "create", "remove", "active", "inactive"]
-    aliases: []
   key_count:
     description:
       - When access_key_state is create it will ensure this quantity of keys are present. Defaults to 1.
     required: false
     default: '1'
-    aliases: []
   access_key_ids:
     description:
       - A list of the keys that you want impacted by the access_key_state paramter.
@@ -78,13 +72,17 @@ options:
       - A list of groups the user should belong to. When update, will gracefully remove groups not listed.
     required: false
     default: null
-    aliases: []
   password:
     description:
       - When type is user and state is present, define the users login password. Also works with update. Note that always returns changed.
     required: false
     default: null
-    aliases: []
+  update_password:
+    required: false
+    default: always
+    choices: ['always', 'on_create']
+    description:
+     - C(always) will update passwords if they differ.  C(on_create) will only set the password for newly created users.
   aws_secret_key:
     description:
       - AWS secret key. If not set then the value of the AWS_SECRET_KEY environment variable is used.
@@ -97,12 +95,12 @@ options:
     required: false
     default: null
     aliases: [ 'ec2_access_key', 'access_key' ]
-
-
-requirements: [ "boto" ]
 notes:
   - 'Currently boto does not support the removal of Managed Policies, the module will error out if your user/group/role has managed policies when you try to do state=absent. They will need to be removed manually.'
-author: Jonathan I. Davila and Paul Seiffert
+author: 
+    - "Jonathan I. Davila (@defionscode)"
+    - "Paul Seiffert (@seiffert)"
+extends_documentation_fragment: aws
 '''
 
 EXAMPLES = '''
@@ -137,7 +135,7 @@ task:
     iam_type: user
     name: jdavila
     state: update
-    group: "{{ item.created_group.group_name }}"
+    groups: "{{ item.created_group.group_name }}"
   with_items: new_groups.results
 
 '''
@@ -148,10 +146,10 @@ import sys
 try:
     import boto
     import boto.iam
+    import boto.ec2
+    HAS_BOTO = True
 except ImportError:
-    print "failed=True msg='boto required for this module'"
-    sys.exit(1)
-
+   HAS_BOTO = False
 
 def boto_exception(err):
     '''generic error message handler'''
@@ -177,10 +175,10 @@ def create_user(module, iam, name, pwd, path, key_state, key_count):
         if key_state in ['create']:
             if key_count:
                 while key_count > key_qty:
-                    keys.append = iam.create_access_key(
+                    keys.append(iam.create_access_key(
                         user_name=name).create_access_key_response.\
                         create_access_key_result.\
-                        access_key
+                        access_key)
                     key_qty += 1
         else:
             keys = None
@@ -282,12 +280,6 @@ def update_user(module, iam, name, new_name, new_path, key_state, key_count, key
                     module.fail_json(changed=False, msg="Passsword doesn't conform to policy")
                 else:
                     module.fail_json(msg=error_msg)
-    else:
-        try:
-            iam.delete_login_profile(name)
-            changed = True
-        except boto.exception.BotoServerError:
-            pass
 
     if key_state == 'create':
         try:
@@ -340,7 +332,8 @@ def update_user(module, iam, name, new_name, new_path, key_state, key_count, key
     return name_change, updated_key_list, changed
 
 
-def set_users_groups(module, iam, name, groups, updated, new_name):
+def set_users_groups(module, iam, name, groups, updated=None,
+new_name=None):
     """ Sets groups for a user, will purge groups not explictly passed, while
         retaining pre-existing groups that also are in the new list.
     """
@@ -380,7 +373,7 @@ def set_users_groups(module, iam, name, groups, updated, new_name):
     return (groups, changed)
 
 
-def create_group(module, iam, name, path):
+def create_group(module=None, iam=None, name=None, path=None):
     changed = False
     try:
         iam.create_group(
@@ -392,7 +385,7 @@ def create_group(module, iam, name, path):
     return name, changed
 
 
-def delete_group(module, iam, name):
+def delete_group(module=None, iam=None, name=None):
     changed = False
     try:
         iam.delete_group(name)
@@ -418,8 +411,7 @@ def delete_group(module, iam, name):
         changed = True
     return changed, name
 
-
-def update_group(module, iam, name, new_name, new_path):
+def update_group(module=None, iam=None, name=None, new_name=None, new_path=None):
     changed = False
     try:
         current_group_path = iam.get_group(
@@ -511,7 +503,8 @@ def main():
         groups=dict(type='list', default=None, required=False),
         state=dict(
             default=None, required=True, choices=['present', 'absent', 'update']),
-        password=dict(default=None, required=False),
+        password=dict(default=None, required=False, no_log=True),
+        update_password=dict(default='always', required=False, choices=['always', 'on_create']),
         access_key_state=dict(default=None, required=False, choices=[
             'active', 'inactive', 'create', 'remove',
             'Active', 'Inactive', 'Create', 'Remove']),
@@ -529,12 +522,16 @@ def main():
         mutually_exclusive=[],
     )
 
+    if not HAS_BOTO:
+       module.fail_json(msg='This module requires boto, please install it')
+
     state = module.params.get('state').lower()
     iam_type = module.params.get('iam_type').lower()
     groups = module.params.get('groups')
     name = module.params.get('name')
     new_name = module.params.get('new_name')
     password = module.params.get('password')
+    update_pw = module.params.get('update_password')
     path = module.params.get('path')
     new_path = module.params.get('new_path')
     key_count = module.params.get('key_count')
@@ -563,32 +560,35 @@ def main():
         module.fail_json(changed=False, msg="iam_type: role, cannot currently be updated, "
                              "please specificy present or absent")
 
-    ec2_url, aws_access_key, aws_secret_key, region = get_ec2_creds(module)
+    region, ec2_url, aws_connect_kwargs = get_aws_connection_info(module)
 
     try:
-        iam = boto.iam.connection.IAMConnection(
-            aws_access_key_id=aws_access_key,
-            aws_secret_access_key=aws_secret_key,
-        )
+        iam = boto.iam.connection.IAMConnection(**aws_connect_kwargs)
     except boto.exception.NoAuthHandlerFound, e:
         module.fail_json(msg=str(e))
 
     result = {}
     changed = False
 
-    orig_group_list = [gl['group_name'] for gl in iam.get_all_groups().
-                       list_groups_result.
-                       groups]
-    orig_user_list = [ul['user_name'] for ul in iam.get_all_users().
-                      list_users_result.
-                      users]
-    orig_role_list = [rl['role_name'] for rl in iam.list_roles().list_roles_response.
-                      list_roles_result.
-                      roles]
-    orig_prof_list = [ap['instance_profile_name'] for ap in iam.list_instance_profiles().
-                      list_instance_profiles_response.
-                      list_instance_profiles_result.
-                      instance_profiles]
+    try:
+        orig_group_list = [gl['group_name'] for gl in iam.get_all_groups().
+                list_groups_result.
+                groups]
+
+        orig_user_list = [ul['user_name'] for ul in iam.get_all_users().
+                list_users_result.
+                users]
+
+        orig_role_list = [rl['role_name'] for rl in iam.list_roles().list_roles_response.
+                list_roles_result.
+                roles]
+
+        orig_prof_list = [ap['instance_profile_name'] for ap in iam.list_instance_profiles().
+                list_instance_profiles_response.
+                list_instance_profiles_result.
+                instance_profiles]
+    except boto.exception.BotoServerError, err:
+        module.fail_json(msg=err.message)
 
     if iam_type == 'user':
         been_updated = False
@@ -612,6 +612,8 @@ def main():
                 user_meta=meta, groups=user_groups, keys=keys, changed=changed)
 
         elif state in ['present', 'update'] and user_exists:
+            if update_pw == 'on_create':
+                password = None
             if name not in orig_user_list and new_name in orig_user_list:
                 been_updated = True
             name_change, key_list, user_changed = update_user(
@@ -648,8 +650,8 @@ def main():
                 msg="The user %s does not exit. No update made." % name)
         elif state == 'absent':
             if name in orig_user_list:
-                set_users_groups(iam, name, '')
-                del_meta, name, changed = delete_user(iam, name)
+                set_users_groups(module, iam, name, '')
+                del_meta, name, changed = delete_user(module, iam, name)
                 module.exit_json(
                     deletion_meta=del_meta, deleted_user=name, changed=changed)
             else:
@@ -660,11 +662,11 @@ def main():
         group_exists = name in orig_group_list
 
         if state == 'present' and not group_exists:
-            new_group, changed = create_group(iam, name, path)
+            new_group, changed = create_group(iam=iam, name=name, path=path)
             module.exit_json(changed=changed, group_name=new_group)
         elif state in ['present', 'update'] and group_exists:
             changed, updated_name, updated_path, cur_path = update_group(
-                iam, name, new_name, new_path)
+                iam=iam, name=name, new_name=new_name, new_path=new_path)
 
             if new_path and new_name:
                 module.exit_json(changed=changed, old_group_name=name,
@@ -688,7 +690,7 @@ def main():
                 changed=changed, msg="Update Failed. Group %s doesn't seem to exit!" % name)
         elif state == 'absent':
             if name in orig_group_list:
-                removed_group, changed = delete_group(iam, name)
+                removed_group, changed = delete_group(iam=iam, name=name)
                 module.exit_json(changed=changed, delete_group=removed_group)
             else:
                 module.exit_json(changed=changed, msg="Group already absent")

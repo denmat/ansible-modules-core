@@ -21,7 +21,9 @@
 DOCUMENTATION = '''
 ---
 module: service
-author: Michael DeHaan
+author:
+    - "Ansible Core Team"
+    - "Michael DeHaan"
 version_added: "0.1"
 short_description:  Manage services.
 description:
@@ -95,6 +97,7 @@ EXAMPLES = '''
 
 # Example action to restart network service for interface eth0
 - service: name=network state=restarted args=eth0
+
 '''
 
 import platform
@@ -156,9 +159,6 @@ class Service(object):
         self.rcconf_value   = None
         self.svc_change     = False
 
-        # select whether we dump additional debug info through syslog
-        self.syslogging = False
-
     # ===========================================
     # Platform specific methods (must be replaced by subclass).
 
@@ -178,9 +178,6 @@ class Service(object):
     # Generic methods that should be used on all platforms.
 
     def execute_command(self, cmd, daemonize=False):
-        if self.syslogging:
-            syslog.openlog('ansible-%s' % os.path.basename(__file__))
-            syslog.syslog(syslog.LOG_NOTICE, 'Command %s, daemonize %r' % (cmd, daemonize))
 
         # Most things don't need to be daemonized
         if not daemonize:
@@ -346,7 +343,7 @@ class Service(object):
                         self.changed = True
 
             # Add line to the list.
-            new_rc_conf.append(rcline)
+            new_rc_conf.append(rcline.strip() + '\n')
 
         # We are done with reading the current rc.conf, close it.
         RCFILE.close()
@@ -410,7 +407,6 @@ class LinuxService(Service):
             if not location.get('systemctl', False):
                 return False
 
-            systemd_enabled = False
             # Check if init is the systemd command, using comm as cmdline could be symlink
             try:
                 f = open('/proc/1/comm', 'r')
@@ -469,7 +465,8 @@ class LinuxService(Service):
                 self.enable_cmd = location['chkconfig']
 
         if self.enable_cmd is None:
-            self.module.fail_json(msg="no service or tool found for: %s" % self.name)
+            # exiting without change on non-existent service
+            self.module.exit_json(changed=False, exists=False)
 
         # If no service control tool selected yet, try to see if 'service' is available
         if self.svc_cmd is None and location.get('service', False):
@@ -477,21 +474,37 @@ class LinuxService(Service):
 
         # couldn't find anything yet
         if self.svc_cmd is None and not self.svc_initscript:
-            self.module.fail_json(msg='cannot find \'service\' binary or init script for service,  possible typo in service name?, aborting')
+            self.module.exit_json(changed=False, exists=False)
 
         if location.get('initctl', False):
             self.svc_initctl = location['initctl']
 
     def get_systemd_service_enabled(self):
-        (rc, out, err) = self.execute_command("%s is-enabled %s" % (self.enable_cmd, self.__systemd_unit,))
+        def sysv_exists(name):
+            script = '/etc/init.d/' + name
+            return os.access(script, os.X_OK)
+
+        def sysv_is_enabled(name):
+            return bool(glob.glob('/etc/rc?.d/S??' + name))
+
+        service_name = self.__systemd_unit
+        (rc, out, err) = self.execute_command("%s is-enabled %s" % (self.enable_cmd, service_name,))
         if rc == 0:
             return True
-        return False
+        elif sysv_exists(service_name):
+            return sysv_is_enabled(service_name)
+        else:
+            return False
 
     def get_systemd_status_dict(self):
-        (rc, out, err) = self.execute_command("%s show %s" % (self.enable_cmd, self.__systemd_unit,))
+
+        # Check status first as show will not fail if service does not exist
+        (rc, out, err) = self.execute_command("%s show '%s'" % (self.enable_cmd, self.__systemd_unit,))
         if rc != 0:
             self.module.fail_json(msg='failure %d running systemctl show for %r: %s' % (rc, self.__systemd_unit, err))
+        elif 'LoadState=not-found' in out:
+            self.module.fail_json(msg='systemd could not find the requested service "%r": %s' % (self.__systemd_unit, err))
+
         key = None
         value_buffer = []
         status_dict = {}
@@ -559,6 +572,11 @@ class LinuxService(Service):
             self.running = "started" in openrc_status_stdout
             self.crashed = "crashed" in openrc_status_stderr
 
+        # Prefer a non-zero return code. For reference, see:
+        # http://refspecs.linuxbase.org/LSB_4.1.0/LSB-Core-generic/LSB-Core-generic/iniscrptact.html
+        if self.running is None and rc in [1, 2, 3, 4, 69]:
+            self.running = False
+
         # if the job status is still not known check it by status output keywords
         # Only check keywords if there's only one line of output (some init
         # scripts will output verbosely in case of error and those can emit
@@ -583,14 +601,10 @@ class LinuxService(Service):
             elif 'dead but pid file exists' in cleanout:
                 self.running = False
 
-        # if the job status is still not known check it by response code
-        # For reference, see:
-        # http://refspecs.linuxbase.org/LSB_4.1.0/LSB-Core-generic/LSB-Core-generic/iniscrptact.html
-        if self.running is None:
-            if rc in [1, 2, 3, 4, 69]:
-                self.running = False
-            elif rc == 0:
-                self.running = True
+        # if the job status is still not known and we got a zero for the
+        # return code, assume here that the service is running
+        if self.running is None and rc == 0:
+            self.running = True
 
         # if the job status is still not known check it by special conditions
         if self.running is None:
@@ -766,6 +780,9 @@ class LinuxService(Service):
                 else:
                     action = 'disable'
 
+                if self.module.check_mode:
+                    rc = 0
+                    return
                 (rc, out, err) = self.execute_command("%s %s %s"  % (self.enable_cmd, self.name, action))
                 if rc != 0:
                     if err:
@@ -853,7 +870,7 @@ class LinuxService(Service):
                 # systemd commands take the form <cmd> <action> <name>
                 svc_cmd = self.svc_cmd
                 arguments = "%s %s" % (self.__systemd_unit, arguments)
-        elif self.svc_initscript:
+        elif self.svc_cmd is None and self.svc_initscript:
             # upstart
             svc_cmd = "%s" % self.svc_initscript
 
@@ -862,7 +879,7 @@ class LinuxService(Service):
         if self.svc_cmd and self.svc_cmd.endswith('rc-service') and self.action == 'start' and self.crashed:
             self.execute_command("%s zap" % svc_cmd, daemonize=True)
 
-        if self.action is not "restart":
+        if self.action != "restart":
             if svc_cmd != '':
                 # upstart or systemd or OpenRC
                 rc_state, stdout, stderr = self.execute_command("%s %s %s" % (svc_cmd, self.action, arguments), daemonize=True)
@@ -945,7 +962,11 @@ class FreeBsdService(Service):
 
         rc, stdout, stderr = self.execute_command("%s %s %s %s" % (self.svc_cmd, self.name, 'rcvar', self.arguments))
         cmd = "%s %s %s %s" % (self.svc_cmd, self.name, 'rcvar', self.arguments)
-        rcvars = shlex.split(stdout, comments=True)
+        try:
+            rcvars = shlex.split(stdout, comments=True)
+        except:
+            #TODO: add a warning to the output with the failure
+            pass
 
         if not rcvars:
             self.module.fail_json(msg="unable to determine rcvar", stdout=stdout, stderr=stderr)
@@ -965,16 +986,16 @@ class FreeBsdService(Service):
 
         try:
             return self.service_enable_rcconf()
-        except:
+        except Exception:
             self.module.fail_json(msg='unable to set rcvar')
 
     def service_control(self):
 
-        if self.action is "start":
+        if self.action == "start":
             self.action = "onestart"
-        if self.action is "stop":
+        if self.action == "stop":
             self.action = "onestop"
-        if self.action is "reload":
+        if self.action == "reload":
             self.action = "onereload"
 
         return self.execute_command("%s %s %s %s" % (self.svc_cmd, self.name, self.action, self.arguments))
@@ -1038,7 +1059,7 @@ class OpenBsdService(Service):
 
         getdef_string = stdout.rstrip()
 
-        # Depending on the service the string returned from 'default' may be
+        # Depending on the service the string returned from 'getdef' may be
         # either a set of flags or the boolean YES/NO
         if getdef_string == "YES" or getdef_string == "NO":
             default_flags = ''
@@ -1052,7 +1073,7 @@ class OpenBsdService(Service):
 
         get_string = stdout.rstrip()
 
-        # Depending on the service the string returned from 'getdef/get' may be
+        # Depending on the service the string returned from 'get' may be
         # either a set of flags or the boolean YES/NO
         if get_string == "YES" or get_string == "NO":
             current_flags = ''
@@ -1180,9 +1201,9 @@ class NetBsdService(Service):
             self.running = True
 
     def service_control(self):
-        if self.action is "start":
+        if self.action == "start":
             self.action = "onestart"
-        if self.action is "stop":
+        if self.action == "stop":
             self.action = "onestop"
 
         self.svc_cmd = "%s" % self.svc_initscript
@@ -1406,11 +1427,9 @@ def main():
 
     service = Service(module)
 
-    if service.syslogging:
-        syslog.openlog('ansible-%s' % os.path.basename(__file__))
-        syslog.syslog(syslog.LOG_NOTICE, 'Service instantiated - platform %s' % service.platform)
-        if service.distribution:
-            syslog.syslog(syslog.LOG_NOTICE, 'Service instantiated - distribution %s' % service.distribution)
+    module.debug('Service instantiated - platform %s' % service.platform)
+    if service.distribution:
+        module.debug('Service instantiated - distribution %s' % service.distribution)
 
     rc = 0
     out = ''
@@ -1482,4 +1501,5 @@ def main():
     module.exit_json(**result)
 
 from ansible.module_utils.basic import *
+
 main()

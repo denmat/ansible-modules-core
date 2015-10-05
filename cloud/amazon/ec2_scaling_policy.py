@@ -1,4 +1,18 @@
 #!/usr/bin/python
+# This file is part of Ansible
+#
+# Ansible is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Ansible is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
 
 DOCUMENTATION = """
 module: ec2_scaling_policy
@@ -7,7 +21,7 @@ description:
   - Can create or delete scaling policies for autoscaling groups
   - Referenced autoscaling groups must already exist
 version_added: "1.6"
-author: Zacharie Eakin
+author: "Zacharie Eakin (@zeekin)"
 options:
   state:
     description:
@@ -23,7 +37,7 @@ options:
       - Name of the associated autoscaling group
     required: true
   adjustment_type:
-    desciption:
+    description:
       - The type of change in capacity of the autoscaling group
     required: false
     choices: ['ChangeInCapacity','ExactCapacity','PercentChangeInCapacity']
@@ -147,7 +161,6 @@ def main():
             scaling_adjustment = dict(type='int'),
             min_adjustment_step = dict(type='int'),
             cooldown = dict(type='int'),
-            region = dict(aliases=['aws_region', 'ec2_region'], choices=AWS_REGIONS),
             state=dict(default='present', choices=['present', 'absent']),
         )
     )

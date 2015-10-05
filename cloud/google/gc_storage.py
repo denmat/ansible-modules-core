@@ -53,14 +53,14 @@ options:
     required: false
     default: private
   headers:
-    version_added: 2.0
+    version_added: "2.0"
     description:
       - Headers to attach to object.
     required: false
     default: '{}'
   expiration:
     description:
-      - Time limit (in seconds) for the URL generated and returned by GCA when performing a mode=put or mode=get_url operation. This url is only avaialbe when public-read is the acl for the object.
+      - Time limit (in seconds) for the URL generated and returned by GCA when performing a mode=put or mode=get_url operation. This url is only available when public-read is the acl for the object.
     required: false
     default: null
   mode:
@@ -80,9 +80,11 @@ options:
     required: true
     default: null
 
-requirements: [ "boto 2.9+" ]
+requirements:
+    - "python >= 2.6"
+    - "boto >= 2.9"
 
-author: benno@ansible.com Note. Most of the code has been taken from the S3 module.
+author: "Benno Joy (@bennojoy)"
 
 '''
 
@@ -109,16 +111,15 @@ EXAMPLES = '''
 - gc_storage: bucket=mybucket mode=delete
 '''
 
-import sys
 import os
 import urlparse
 import hashlib
 
 try:
     import boto
+    HAS_BOTO = True
 except ImportError:
-    print "failed=True msg='boto 2.9+ required for this module'"
-    sys.exit(1)
+    HAS_BOTO = False
 
 def grant_check(module, gs, obj):
     try:
@@ -210,15 +211,6 @@ def create_dirkey(module, gs, bucket, obj):
     except gs.provider.storage_response_error, e:
         module.fail_json(msg= str(e))
 
-def upload_file_check(src):
-    if os.path.exists(src):
-        file_exists is True
-    else:
-        file_exists is False
-    if os.path.isdir(src):
-        module.fail_json(msg="Specifying a directory is not a valid source for upload.", failed=True)
-    return file_exists
-
 def path_check(path):
     if os.path.exists(path):
         return True 
@@ -283,7 +275,7 @@ def get_download_url(module, gs, bucket, obj, expiry):
 
 def handle_get(module, gs, bucket, obj, overwrite, dest):
     md5_remote = keysum(module, gs, bucket, obj)
-    md5_local = hashlib.md5(open(dest, 'rb').read()).hexdigest()
+    md5_local = module.md5(dest)
     if md5_local == md5_remote:
         module.exit_json(changed=False)
     if md5_local != md5_remote and not overwrite:
@@ -299,7 +291,7 @@ def handle_put(module, gs, bucket, obj, overwrite, src, expiration):
     # Lets check key state. Does it exist and if it does, compute the etag md5sum.
     if bucket_rc and key_rc:
         md5_remote = keysum(module, gs, bucket, obj)
-        md5_local = hashlib.md5(open(src, 'rb').read()).hexdigest()
+        md5_local = module.md5(src)
         if md5_local == md5_remote:
             module.exit_json(msg="Local and remote object are identical", changed=False)
         if md5_local != md5_remote and not overwrite:
@@ -370,6 +362,9 @@ def main():
         ),
     )
 
+    if not HAS_BOTO:
+        module.fail_json(msg='boto 2.9+ required for this module')
+
     bucket        = module.params.get('bucket')
     obj           = module.params.get('object')
     src           = module.params.get('src')
@@ -438,5 +433,5 @@ def main():
 
 # import module snippets
 from ansible.module_utils.basic import *
-
-main()
+if __name__ == '__main__':
+    main()
